@@ -1,0 +1,19 @@
+{
+  "schema_version": 2,
+  "plugins": [
+    {
+      "id": "client-key-policy",
+      "name": "Client Key Policy",
+      "description": "Issues per-client API keys stored in Vault/OpenBao, binds each key to a provider policy that restricts providers and models, and provides model aliasing with collision handling. Includes a management UI for policies and key rotation/revocation.",
+      "author": "Wyrd Company",
+      "version": "0.1.0",
+      "repository": "https://github.com/wyrd-company/cap-plugin-registry",
+      "homepage": "https://github.com/wyrd-company/cap-plugin-registry/tree/main/plugins/client-key-policy",
+      "license": "MIT",
+      "tags": ["auth", "frontend-auth", "policy", "vault", "openbao", "model-router", "management-ui"],
+      "install": {
+        "type": "github-release"
+      }
+    }
+  ]
+}
