@@ -8,7 +8,6 @@ Wyrd Company's plugin registry for [CLIProxyAPI](https://github.com/router-for-m
 | --- | --- |
 | `registry.json` | CPA plugin store registry (`schema_version` 2) |
 | `plugins/client-key-policy/` | Vault-backed client keys with provider policies, model aliasing and a management UI ([README](plugins/client-key-policy/README.md)) |
-| `CLIProxyAPI/` | Temporary submodule of upstream CPA, used as a reference for the plugin ABI |
 
 ## Using this registry in CPA
 
