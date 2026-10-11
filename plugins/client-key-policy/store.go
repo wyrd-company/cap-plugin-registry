@@ -600,6 +600,13 @@ func (rt *runtime) revokeKey(ctx context.Context, id string) error {
 			return errWrite
 		}
 	}
+	// The tombstone is committed (or there was nothing to revoke): stop accepting
+	// the key here right away, independently of the historical cleanup below.
+	current := rt.snap.Load()
+	clients := copyClients(current.clients)
+	delete(clients, id)
+	rt.snap.Store(buildSnapshot(current.policies, clients, current.catalog))
+
 	var earlier []int
 	for v := 1; v < version; v++ {
 		earlier = append(earlier, v)
@@ -607,10 +614,6 @@ func (rt *runtime) revokeKey(ctx context.Context, id string) error {
 	if errDestroy := rt.vault.DestroyVersions(ctx, rel, earlier); errDestroy != nil {
 		return fmt.Errorf("key %s revoked, but destroying old versions failed: %w", id, errDestroy)
 	}
-	current := rt.snap.Load()
-	clients := copyClients(current.clients)
-	delete(clients, id)
-	rt.snap.Store(buildSnapshot(current.policies, clients, current.catalog))
 	return nil
 }
 

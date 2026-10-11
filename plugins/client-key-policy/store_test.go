@@ -195,3 +195,31 @@ func TestRevokeUnknownKeyIsNoop(t *testing.T) {
 		t.Fatal("revoking an unknown key should not write a tombstone")
 	}
 }
+
+// A committed tombstone must stop the key on the revoking instance even when
+// destroying the historical versions fails (e.g. missing destroy permission).
+func TestRevokeRejectsKeyWhenDestroyFails(t *testing.T) {
+	kv, a, _ := setupStaleInstances(t)
+	ctx := context.Background()
+	if _, err := a.issueKey(ctx, "sample", "client", "", false); err != nil {
+		t.Fatal(err)
+	}
+	original := kv.apiKey(samplePath)
+	kv.mu.Lock()
+	kv.denyDestroy = true
+	kv.mu.Unlock()
+
+	err := a.revokeKey(ctx, "sample/client")
+	if err == nil || !strings.Contains(err.Error(), "destroying old versions failed") {
+		t.Fatalf("expected the cleanup error to be reported, got %v", err)
+	}
+	if kv.apiKey(samplePath) != "" {
+		t.Fatal("tombstone should be the current version")
+	}
+	if authenticates(a, original) {
+		t.Fatal("revoked key still authenticates after a failed cleanup")
+	}
+	if record, identified := a.clientFromMetadata(map[string]any{"caller_scope": callerScope("sample/client")}, nil); !identified || record != nil {
+		t.Fatal("revoked client's caller scope still resolves")
+	}
+}

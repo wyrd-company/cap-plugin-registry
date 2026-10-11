@@ -16,6 +16,8 @@ import (
 type fakeKV struct {
 	mu      sync.Mutex
 	secrets map[string]fakeSecret
+	// denyDestroy makes the versions-destroy endpoint answer 403.
+	denyDestroy bool
 }
 
 type fakeSecret struct {
@@ -75,6 +77,10 @@ func (kv *fakeKV) serve(w http.ResponseWriter, r *http.Request) {
 			writeJSON(http.StatusOK, map[string]any{"data": map[string]any{"version": current + 1}})
 		}
 	case strings.HasPrefix(r.URL.Path, "/v1/secret/destroy/") && r.Method == http.MethodPost:
+		if kv.denyDestroy {
+			writeJSON(http.StatusForbidden, map[string]any{"errors": []string{"permission denied"}})
+			return
+		}
 		path := strings.TrimPrefix(r.URL.Path, "/v1/secret/destroy/")
 		var body struct {
 			Versions []int `json:"versions"`
