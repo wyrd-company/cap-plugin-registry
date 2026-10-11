@@ -1,4 +1,4 @@
-module github.com/wyrd-company/cap-plugin-registry/plugins/client-key-policy
+module github.com/wyrd-company/cpa-plugin-registry/plugins/client-key-policy
 
 go 1.26
 

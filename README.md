@@ -1,4 +1,4 @@
-# cap-plugin-registry
+# CLIProxyAPI Plugin Registry
 
 Wyrd Company's plugin registry for [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) (CPA), together with the source of our plugins.
 
@@ -17,7 +17,7 @@ Add the registry as an extra plugin store source in CPA's `config.yaml`:
 plugins:
   enabled: true
   store-sources:
-    - "https://raw.githubusercontent.com/wyrd-company/cap-plugin-registry/main/registry.json"
+    - "https://raw.githubusercontent.com/wyrd-company/cpa-plugin-registry/main/registry.json"
 ```
 
 If the repository is private, add a store auth rule. The token is read from the environment:
