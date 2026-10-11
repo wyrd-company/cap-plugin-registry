@@ -19,8 +19,9 @@ type fakeKV struct {
 }
 
 type fakeSecret struct {
-	version int
-	data    map[string]any
+	version  int
+	data     map[string]any
+	versions map[int]map[string]any // nil value = destroyed
 }
 
 func newFakeVault(t *testing.T) (*fakeKV, *httptest.Server) {
@@ -64,9 +65,30 @@ func (kv *fakeKV) serve(w http.ResponseWriter, r *http.Request) {
 				writeJSON(http.StatusBadRequest, map[string]any{"errors": []string{"check-and-set parameter did not match the current version"}})
 				return
 			}
-			kv.secrets[path] = fakeSecret{version: current + 1, data: body.Data}
+			secret := kv.secrets[path]
+			if secret.versions == nil {
+				secret.versions = map[int]map[string]any{}
+			}
+			secret.version, secret.data = current+1, body.Data
+			secret.versions[secret.version] = body.Data
+			kv.secrets[path] = secret
 			writeJSON(http.StatusOK, map[string]any{"data": map[string]any{"version": current + 1}})
 		}
+	case strings.HasPrefix(r.URL.Path, "/v1/secret/destroy/") && r.Method == http.MethodPost:
+		path := strings.TrimPrefix(r.URL.Path, "/v1/secret/destroy/")
+		var body struct {
+			Versions []int `json:"versions"`
+		}
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		secret := kv.secrets[path]
+		for _, v := range body.Versions {
+			if _, ok := secret.versions[v]; ok {
+				secret.versions[v] = nil
+			}
+		}
+		kv.secrets[path] = secret
+		w.WriteHeader(http.StatusNoContent)
 	case strings.HasPrefix(r.URL.Path, "/v1/secret/metadata/"):
 		path := strings.TrimPrefix(r.URL.Path, "/v1/secret/metadata/")
 		switch r.Method {
@@ -122,4 +144,17 @@ func vaultRuntime(t *testing.T, addr string) *runtime {
 	// Suppress refresh-on-miss so snapshots stay as stale as the test makes them.
 	rt.lastMiss.Store(1 << 62)
 	return rt
+}
+
+// liveKeyVersions counts versions of path whose data still contains an api_key.
+func (kv *fakeKV) liveKeyVersions(path string) int {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	n := 0
+	for _, data := range kv.secrets[path].versions {
+		if key, _ := data["api_key"].(string); key != "" {
+			n++
+		}
+	}
+	return n
 }

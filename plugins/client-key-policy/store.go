@@ -213,7 +213,7 @@ func (rt *runtime) loadFromVault(ctx context.Context) error {
 			}
 			record, errRead := rt.readClient(ctx, policyName, name)
 			if errRead != nil {
-				if errors.Is(errRead, errVaultNotFound) {
+				if errors.Is(errRead, errVaultNotFound) || errors.Is(errRead, errKeyRevoked) {
 					continue
 				}
 				return errRead
@@ -250,7 +250,14 @@ type keyRecord struct {
 	Description    string `json:"description,omitempty"`
 	CreatedAt      string `json:"created_at"`
 	RotatedAt      string `json:"rotated_at"`
+	// Revoked marks a revocation tombstone. Revocation keeps the secret's
+	// metadata so KV versions stay monotonic and check-and-set stays sound.
+	Revoked   bool   `json:"revoked,omitempty"`
+	RevokedAt string `json:"revoked_at,omitempty"`
 }
+
+// errKeyRevoked reports a revocation tombstone at a key path.
+var errKeyRevoked = errors.New("key revoked")
 
 func (rt *runtime) readClient(ctx context.Context, policyName, name string) (*client, error) {
 	rel := keysDir + "/" + policyName + "/" + name
@@ -262,8 +269,8 @@ func (rt *runtime) readClient(ctx context.Context, policyName, name string) (*cl
 	if errDecode := decodeMap(data, &record); errDecode != nil {
 		return nil, fmt.Errorf("key %s/%s: %w", policyName, name, errDecode)
 	}
-	if record.APIKey == "" {
-		return nil, fmt.Errorf("key %s/%s has no api_key", policyName, name)
+	if record.Revoked || record.APIKey == "" {
+		return nil, errKeyRevoked
 	}
 	created, _ := time.Parse(time.RFC3339, record.CreatedAt)
 	rotated, _ := time.Parse(time.RFC3339, record.RotatedAt)
@@ -491,9 +498,18 @@ func (rt *runtime) issueKey(ctx context.Context, policyName, name, description s
 	rel := keysDir + "/" + policyName + "/" + name
 	// Check-and-set at the Vault boundary: the local snapshot may be stale when
 	// another CPA instance issued or rotated this key since the last refresh.
-	cas := 0
+	var cas int
 	if existing != nil {
+		// Versions never repeat (revocation keeps metadata), so the recorded
+		// version identifies exactly the key this instance knows.
 		cas = existing.version
+	} else {
+		// Create over nothing (cas=0) or over a revocation tombstone (cas=its
+		// version). Anything else is a live key issued elsewhere.
+		var errCAS error
+		if cas, errCAS = rt.createVersion(ctx, rel, id); errCAS != nil {
+			return nil, errCAS
+		}
 	}
 	version, errWrite := rt.vault.Write(ctx, rel, data, &cas)
 	if errors.Is(errWrite, errVaultCASMismatch) {
@@ -525,15 +541,71 @@ func (rt *runtime) issueKey(ctx context.Context, policyName, name, description s
 	return updated, nil
 }
 
+// createVersion returns the CAS version for issuing a new key at rel.
+func (rt *runtime) createVersion(ctx context.Context, rel, id string) (int, error) {
+	data, version, errRead := rt.vault.Read(ctx, rel)
+	switch {
+	case errors.Is(errRead, errVaultNotFound):
+		// Absent, or every version destroyed: the next write must be the next version.
+		return version, nil
+	case errRead != nil:
+		return 0, errRead
+	}
+	if revoked, _ := data["revoked"].(bool); revoked {
+		return version, nil
+	}
+	go rt.refreshVault()
+	return 0, fmt.Errorf("key %s already exists in Vault (issued by another instance); reload and rotate it instead", id)
+}
+
+// revokeKey replaces the key with a revocation tombstone and destroys the data of
+// every earlier version. The secret's metadata is kept so versions stay monotonic.
 func (rt *runtime) revokeKey(ctx context.Context, id string) error {
 	policyName, name, ok := strings.Cut(id, "/")
 	if !ok || !namePattern.MatchString(policyName) || !namePattern.MatchString(name) {
 		return fmt.Errorf("invalid client id %q", id)
 	}
+	rel := keysDir + "/" + policyName + "/" + name
 	rt.writeMu.Lock()
 	defer rt.writeMu.Unlock()
-	if errDestroy := rt.vault.Destroy(ctx, keysDir+"/"+policyName+"/"+name); errDestroy != nil {
-		return errDestroy
+	tombstone, errEncode := encodeMap(keyRecord{
+		ClientID:  id,
+		Policy:    policyName,
+		Name:      name,
+		Revoked:   true,
+		RevokedAt: time.Now().UTC().Format(time.RFC3339),
+	})
+	if errEncode != nil {
+		return errEncode
+	}
+	// Revocation must win over concurrent writes: retry the conditional write on
+	// the version just read, so a key rotated meanwhile is revoked too.
+	var version int
+	for attempt := 0; ; attempt++ {
+		_, current, errRead := rt.vault.Read(ctx, rel)
+		if errors.Is(errRead, errVaultNotFound) {
+			// Nothing live to revoke (never issued, or already destroyed).
+			version = 0
+			break
+		}
+		if errRead != nil {
+			return errRead
+		}
+		var errWrite error
+		version, errWrite = rt.vault.Write(ctx, rel, tombstone, &current)
+		if errWrite == nil {
+			break
+		}
+		if !errors.Is(errWrite, errVaultCASMismatch) || attempt >= 4 {
+			return errWrite
+		}
+	}
+	var earlier []int
+	for v := 1; v < version; v++ {
+		earlier = append(earlier, v)
+	}
+	if errDestroy := rt.vault.DestroyVersions(ctx, rel, earlier); errDestroy != nil {
+		return fmt.Errorf("key %s revoked, but destroying old versions failed: %w", id, errDestroy)
 	}
 	current := rt.snap.Load()
 	clients := copyClients(current.clients)

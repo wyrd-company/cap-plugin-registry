@@ -134,6 +134,7 @@ vault secrets enable -path=secret kv-v2
 vault policy write cpa-client-key-policy - <<'EOF'
 path "secret/data/cliproxyapi/*"     { capabilities = ["create", "read", "update"] }
 path "secret/metadata/cliproxyapi/*" { capabilities = ["list", "read", "delete"] }
+path "secret/destroy/cliproxyapi/*"  { capabilities = ["update"] }
 EOF
 
 # AppRole for the plugin (recommended over a static token)
@@ -159,9 +160,12 @@ path "secret/data/cliproxyapi/keys/team-a/*" { capabilities = ["read"] }
 For Vault Enterprise or OpenBao namespaces, set `vault.namespace`. The paths above
 are then relative to that namespace, for example `cliproxyapi`.
 
-Revoking a key destroys its Vault secret, including all versions and metadata.
-Rotating a key writes a new KV version; the old value stays in KV history but no
-longer authenticates.
+Revoking a key writes a revocation marker (`{"revoked": true, …}`, no `api_key`) as the
+latest version and permanently destroys every earlier version's data. The secret's
+metadata is kept so KV versions never repeat: issuing and rotating keys use KV v2
+check-and-set, so an instance with stale data cannot overwrite a key issued, rotated or
+re-issued elsewhere. Rotating a key writes a new KV version; the old value stays in KV
+history but no longer authenticates.
 
 ## CPA configuration
 

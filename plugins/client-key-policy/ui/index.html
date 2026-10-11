@@ -148,7 +148,7 @@
 
   async function mutate(action, id) {
     const msg = action === 'revoke'
-      ? 'Revoke ' + id + '? The key stops working immediately and its Vault secret is destroyed.'
+      ? 'Revoke ' + id + '? The key stops working immediately; its Vault secret is replaced by a revocation marker and old versions are destroyed.'
       : 'Rotate ' + id + '? The current key stops working immediately; the client must re-read Vault.';
     if (!confirm(msg)) return;
     try { await api('POST', '/keys/' + action + '?id=' + encodeURIComponent(id)); toast(id + ': ' + action + 'd'); load(); }

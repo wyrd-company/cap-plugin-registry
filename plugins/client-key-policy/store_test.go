@@ -101,3 +101,97 @@ func TestVaultWriteCASMismatchError(t *testing.T) {
 		t.Fatalf("expected errVaultCASMismatch, got %v", err)
 	}
 }
+
+// Revoking destroys the secret's metadata, so a re-issued key restarts at
+// version 1; an instance that still knows the revoked key at version 1 must
+// not be able to rotate over the re-issued one.
+func TestRotateAfterRevokeAndReissueConflicts(t *testing.T) {
+	kv, a, b := setupStaleInstances(t)
+	ctx := context.Background()
+	if _, err := a.issueKey(ctx, "sample", "client", "", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.loadFromVault(ctx); err != nil { // b knows the first key at version 1
+		t.Fatal(err)
+	}
+	if err := a.revokeKey(ctx, "sample/client"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.issueKey(ctx, "sample", "client", "", false); err != nil { // version 1 again
+		t.Fatal(err)
+	}
+	reissued := kv.apiKey(samplePath)
+	if n := kv.liveKeyVersions(samplePath); n != 1 {
+		t.Fatalf("expected only the re-issued key to be readable, got %d versions", n)
+	}
+
+	_, err := b.issueKey(ctx, "sample", "client", "", true)
+	if err == nil || !strings.Contains(err.Error(), "changed in Vault") {
+		t.Fatalf("expected rotate conflict after revoke/reissue, got %v", err)
+	}
+	if got := kv.apiKey(samplePath); got != reissued {
+		t.Fatal("stale rotation overwrote the re-issued key")
+	}
+	if !authenticates(a, reissued) {
+		t.Fatal("re-issued client lost access")
+	}
+}
+
+func TestRotateAfterRevokeConflicts(t *testing.T) {
+	kv, a, b := setupStaleInstances(t)
+	ctx := context.Background()
+	if _, err := a.issueKey(ctx, "sample", "client", "", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.loadFromVault(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.revokeKey(ctx, "sample/client"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := b.issueKey(ctx, "sample", "client", "", true)
+	if err == nil || !strings.Contains(err.Error(), "changed in Vault") {
+		t.Fatalf("expected rotate conflict after revoke, got %v", err)
+	}
+	if got := kv.apiKey(samplePath); got != "" {
+		t.Fatal("stale rotation resurrected a revoked key")
+	}
+	if n := kv.liveKeyVersions(samplePath); n != 0 {
+		t.Fatalf("revocation left %d readable key versions", n)
+	}
+}
+
+// Re-issuing on a stale instance that never saw the revocation tombstone must
+// still be conditional: it uses the tombstone's version, not cas=0.
+func TestReissueAfterRevokeOnStaleInstance(t *testing.T) {
+	kv, a, b := setupStaleInstances(t)
+	ctx := context.Background()
+	if _, err := a.issueKey(ctx, "sample", "client", "", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.revokeKey(ctx, "sample/client"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.issueKey(ctx, "sample", "client", "", false); err != nil {
+		t.Fatalf("re-issue over a tombstone should succeed: %v", err)
+	}
+	if kv.apiKey(samplePath) == "" {
+		t.Fatal("re-issued key missing")
+	}
+	if err := a.loadFromVault(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !authenticates(a, kv.apiKey(samplePath)) {
+		t.Fatal("other instance should accept the re-issued key after reload")
+	}
+}
+
+func TestRevokeUnknownKeyIsNoop(t *testing.T) {
+	kv, a, _ := setupStaleInstances(t)
+	if err := a.revokeKey(context.Background(), "sample/missing"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := kv.secrets["cliproxyapi/keys/sample/missing"]; ok {
+		t.Fatal("revoking an unknown key should not write a tombstone")
+	}
+}

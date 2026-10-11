@@ -126,6 +126,15 @@ func (v *vaultClient) List(ctx context.Context, rel string) ([]string, error) {
 	return out.Data.Keys, nil
 }
 
+// DestroyVersions permanently erases the data of the given versions while keeping
+// the secret's metadata, so its version counter keeps increasing.
+func (v *vaultClient) DestroyVersions(ctx context.Context, rel string, versions []int) error {
+	if len(versions) == 0 {
+		return nil
+	}
+	return v.do(ctx, http.MethodPost, v.cfg.Mount+"/destroy/"+escapePath(v.kvPath(rel)), map[string]any{"versions": versions}, nil)
+}
+
 // Destroy permanently removes all versions and metadata of a secret.
 func (v *vaultClient) Destroy(ctx context.Context, rel string) error {
 	errDo := v.do(ctx, http.MethodDelete, v.cfg.Mount+"/metadata/"+escapePath(v.kvPath(rel)), nil, nil)
