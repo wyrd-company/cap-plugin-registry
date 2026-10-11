@@ -212,19 +212,6 @@ VAULT_SECRET_ID=…
 MANAGEMENT_PASSWORD=…  # read by CPA itself and by the plugin
 ```
 
-The plugin reads the model catalog from CPA's Management API, so it needs a plaintext
-management key. It cannot reuse `secret-key`: CPA bcrypt-hashes that value and writes
-the hash back to `config.yaml` on startup, and plugins only receive their own
-`plugins.configs.<id>` block anyway.
-
-`MANAGEMENT_PASSWORD` is a key CPA accepts natively, so a single variable serves both
-CPA and the plugin. **Side effect:** when `MANAGEMENT_PASSWORD` is set, CPA allows
-*remote* management access regardless of `management.allow-remote`. Keep the
-management endpoints off untrusted networks, for example by binding `server.host`
-to an internal interface or filtering `/v0/management` and `/v8/management` at
-your reverse proxy. If you do not want that, point `management_key_env` at another
-variable that holds the plaintext of `management.secret-key`.
-
 If the configuration is invalid, the plugin still loads but rejects every client
 request (it fails closed). The error is shown in CPA's log and in the UI status bar.
 
