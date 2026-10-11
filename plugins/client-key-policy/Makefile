@@ -26,7 +26,7 @@ build: $(LIB)
 
 $(LIB): $(wildcard *.go) ui/index.html go.mod
 	mkdir -p $(dir $@)
-	CGO_ENABLED=1 GOOS=$(GOOS) GOARCH=$(GOARCH) go build -trimpath -buildmode=c-shared -o $@ .
+	CGO_ENABLED=1 GOOS=$(GOOS) GOARCH=$(GOARCH) go build -trimpath -buildmode=c-shared -ldflags "-s -w -X main.pluginVersion=$(VERSION)" -o $@ .
 	rm -f $(basename $@).h
 
 test:

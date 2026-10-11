@@ -7,9 +7,11 @@ import (
 	"sync"
 )
 
+// pluginVersion is overridden at release build time via -ldflags "-X main.pluginVersion=<tag>".
+var pluginVersion = "0.1.0"
+
 const (
-	pluginName    = "client-key-policy"
-	pluginVersion = "0.1.0"
+	pluginName = "client-key-policy"
 	// schemaVersion is the CPA plugin RPC schema this plugin implements.
 	schemaVersion = 6
 )
