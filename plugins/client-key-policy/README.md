@@ -85,6 +85,7 @@ another CPA instance are picked up quickly.
   - An empty allow list allows everything.
   - Deny always wins.
 - **Duplicate names**: when two or more allowed providers serve the same model name, it is exposed as `provider/model` for each of them, unless `winners` names one provider.
+  - For `openai-compatibility` providers the prefix is the entry name (`openrouter/gpt-5`, not `openai-compatible-openrouter/gpt-5`), unless that short name is also another provider's key.
   - With a winner, the model keeps its plain name on the winner, and the other providers do not offer it at all.
 - **`aliases`**: explicit grants.
   - An alias may target any model of an allowed provider.

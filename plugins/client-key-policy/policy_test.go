@@ -23,11 +23,11 @@ func resolve(t *testing.T, p Policy) View {
 func TestResolvePrefixesCollisions(t *testing.T) {
 	view := resolve(t, Policy{Name: "a", Providers: []string{"codex", "openai-compatible-openrouter"}})
 	want := map[string]Target{
-		"codex/gpt-5":                        {"codex", "gpt-5"},
-		"openai-compatible-openrouter/gpt-5": {"openai-compatible-openrouter", "gpt-5"},
-		"gpt-5-mini":                         {"codex", "gpt-5-mini"},
-		"claude-sonnet-4-6":                  {"openai-compatible-openrouter", "claude-sonnet-4-6"},
-		"llama-4":                            {"openai-compatible-openrouter", "llama-4"},
+		"codex/gpt-5":       {"codex", "gpt-5"},
+		"openrouter/gpt-5":  {"openai-compatible-openrouter", "gpt-5"},
+		"gpt-5-mini":        {"codex", "gpt-5-mini"},
+		"claude-sonnet-4-6": {"openai-compatible-openrouter", "claude-sonnet-4-6"},
+		"llama-4":           {"openai-compatible-openrouter", "llama-4"},
 	}
 	if !reflect.DeepEqual(view.Models, want) {
 		t.Fatalf("Models = %#v, want %#v", view.Models, want)
@@ -43,7 +43,7 @@ func TestResolveWinnerDropsLosers(t *testing.T) {
 	if got := view.Models["gpt-5"]; got != (Target{"codex", "gpt-5"}) {
 		t.Fatalf("gpt-5 = %#v", got)
 	}
-	if _, ok := view.Models["openai-compatible-openrouter/gpt-5"]; ok {
+	if _, ok := view.Models["openrouter/gpt-5"]; ok {
 		t.Fatal("loser should not contribute a prefixed name")
 	}
 	if view.Permits("openai-compatible-openrouter", "gpt-5") {
@@ -84,5 +84,18 @@ func TestValidateRejectsAliasOutsidePolicy(t *testing.T) {
 	p.normalize()
 	if err := p.Validate(); err == nil {
 		t.Fatal("expected error for alias targeting a disallowed provider")
+	}
+}
+
+func TestDisplayPrefixKeepsFullKeyOnCollision(t *testing.T) {
+	catalog := Catalog{"codex": {"m"}, "openai-compatible-codex": {"m"}}
+	p := Policy{Name: "a", Providers: []string{"*"}}
+	p.normalize()
+	view := p.Resolve(catalog)
+	if _, ok := view.Models["openai-compatible-codex/m"]; !ok {
+		t.Fatalf("expected full key when short prefix collides, got %v", view.SortedNames())
+	}
+	if _, ok := view.Models["codex/m"]; !ok {
+		t.Fatalf("expected codex/m, got %v", view.SortedNames())
 	}
 }

@@ -153,7 +153,7 @@ func (p *Policy) Resolve(catalog Catalog) View {
 			continue
 		}
 		for _, provider := range providers {
-			view.add(provider+"/"+model, Target{Provider: provider, Model: model})
+			view.add(displayPrefix(provider, catalog)+"/"+model, Target{Provider: provider, Model: model})
 		}
 	}
 	// Aliases are explicit grants and override catalog-derived names.
@@ -163,6 +163,20 @@ func (p *Policy) Resolve(catalog Catalog) View {
 		}
 	}
 	return view
+}
+
+// displayPrefix shortens openai-compatibility provider keys for client-visible
+// names ("openai-compatible-openrouter" -> "openrouter"), unless the short form
+// would collide with another provider key.
+func displayPrefix(provider string, catalog Catalog) string {
+	short := strings.TrimPrefix(provider, "openai-compatible-")
+	if short == provider || short == "" {
+		return provider
+	}
+	if _, taken := catalog[short]; taken {
+		return provider
+	}
+	return short
 }
 
 func (v *View) add(name string, target Target) {
