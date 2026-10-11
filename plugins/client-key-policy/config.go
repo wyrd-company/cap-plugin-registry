@@ -67,7 +67,7 @@ func defaultConfig() Config {
 		},
 		CPA: CPAConfig{
 			ManagementURL:    "http://127.0.0.1:8317",
-			ManagementKeyEnv: "CPA_MANAGEMENT_KEY",
+			ManagementKeyEnv: "MANAGEMENT_PASSWORD",
 			CatalogInterval:  time.Minute,
 		},
 		ClientIDHeader:  "X-CPA-Client-Id",
