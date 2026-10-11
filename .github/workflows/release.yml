@@ -1,0 +1,75 @@
+name: Release
+
+# Plain semver tags only (e.g. 0.2.0); CPA's plugin store reads the version from the tag.
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { runner: ubuntu-latest,    goos: linux,  goarch: amd64 }
+          - { runner: ubuntu-24.04-arm, goos: linux,  goarch: arm64 }
+          - { runner: macos-latest,     goos: darwin, goarch: arm64 }
+    defaults:
+      run:
+        working-directory: plugins/client-key-policy
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: plugins/client-key-policy/go.mod
+          cache-dependency-path: plugins/client-key-policy/go.sum
+
+      - name: Test
+        run: make test
+
+      - name: Package
+        run: make package VERSION="${GITHUB_REF_NAME}" GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: client-key-policy-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: plugins/client-key-policy/dist/*.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check registry version matches tag
+        run: |
+          version="$(python3 -c 'import json; print(next(p["version"] for p in json.load(open("registry.json"))["plugins"] if p["id"] == "client-key-policy"))')"
+          if [ "$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::warning::registry.json lists client-key-policy $version but the tag is $GITHUB_REF_NAME"
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum *.zip > checksums.txt && cat checksums.txt
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/checksums.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes

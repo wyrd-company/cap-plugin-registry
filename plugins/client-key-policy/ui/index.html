@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Client Key Policy</title>
+<style>
+  :root { --bg:#f7f7f8; --panel:#fff; --text:#1d1d1f; --muted:#6b6b73; --line:#dedee3; --accent:#3557d4; --danger:#c0362c; --ok:#227a43; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#16171a; --panel:#1f2024; --text:#ececf0; --muted:#9a9aa4; --line:#33343a; --accent:#7d97ff; --danger:#ff7a6e; --ok:#5fcf8a; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; flex:1; }
+  main { padding:16px 20px; display:grid; gap:16px; grid-template-columns: minmax(260px, 1fr) minmax(320px, 2fr); }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; min-width:0; }
+  section.wide { grid-column: 1 / -1; }
+  h2 { font-size:14px; margin:0 0 10px; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; word-break:break-word; }
+  th { color:var(--muted); font-weight:500; font-size:12px; }
+  input, textarea, select { width:100%; font:inherit; color:inherit; background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:6px 8px; }
+  textarea { min-height:64px; font-family: ui-monospace, monospace; font-size:12px; }
+  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
+  button { font:inherit; border:1px solid var(--line); background:var(--panel); color:var(--text); border-radius:6px; padding:5px 10px; cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.danger { color:var(--danger); }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .row > * { flex:1; min-width:120px; }
+  .muted { color:var(--muted); font-size:12px; }
+  .err { color:var(--danger); }
+  .ok { color:var(--ok); }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; }
+  .chips label { display:flex; gap:4px; align-items:center; margin:0; color:var(--text); font-size:13px; border:1px solid var(--line); border-radius:12px; padding:2px 8px; }
+  .chips input { width:auto; }
+  .list-item { padding:6px 8px; border-radius:6px; cursor:pointer; }
+  .list-item.active { background:var(--bg); outline:1px solid var(--accent); }
+  code { font-family: ui-monospace, monospace; font-size:12px; }
+  #toast { position:fixed; right:16px; bottom:16px; padding:8px 12px; border-radius:6px; background:var(--panel); border:1px solid var(--line); display:none; max-width:60vw; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Client Key Policy</h1>
+  <input id="mgmtKey" type="password" placeholder="CPA management key" style="max-width:260px" autocomplete="off">
+  <button id="connect" class="primary">Connect</button>
+  <button id="refresh">Reload from Vault</button>
+</header>
+<main>
+  <section class="wide" id="statusPanel"><span class="muted">Enter the CPA management key to load data.</span></section>
+
+  <section>
+    <h2>Provider policies</h2>
+    <div id="policyList"></div>
+    <div class="row" style="margin-top:10px"><button id="newPolicy">New policy</button></div>
+  </section>
+
+  <section>
+    <h2 id="editorTitle">Policy</h2>
+    <div id="editor" class="muted">Select or create a policy.</div>
+  </section>
+
+  <section class="wide">
+    <h2>Client keys</h2>
+    <p class="muted">Keys are written to Vault only and never shown here. Clients read them from the Vault path listed for each key.</p>
+    <div class="row">
+      <select id="keyPolicy"></select>
+      <input id="keyName" placeholder="client name (a-z0-9_-)">
+      <input id="keyDesc" placeholder="description (optional)">
+      <button id="issueKey" class="primary" style="flex:0">Issue key</button>
+    </div>
+    <div id="keyTable" style="margin-top:12px"></div>
+  </section>
+</main>
+<div id="toast"></div>
+<script>
+(function () {
+  const API = '/v0/management/client-key-policy';
+  let state = null;
+  let selected = null; // policy name or '' for new
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+  try { $('mgmtKey').value = sessionStorage.getItem('ckp.mgmtKey') || ''; } catch (e) {}
+
+  function toast(msg, isErr) {
+    const t = $('toast');
+    t.textContent = msg; t.className = isErr ? 'err' : 'ok'; t.style.display = 'block';
+    clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.style.display = 'none'; }, 4000);
+  }
+
+  async function api(method, path, body) {
+    const key = $('mgmtKey').value.trim();
+    const res = await fetch(API + path, {
+      method,
+      headers: Object.assign({ 'Authorization': 'Bearer ' + key }, body ? { 'Content-Type': 'application/json' } : {}),
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    let data = null;
+    try { data = await res.json(); } catch (e) {}
+    if (!res.ok) throw new Error((data && data.error) || ('HTTP ' + res.status));
+    return data;
+  }
+
+  async function load() {
+    try {
+      state = await api('GET', '/state');
+      try { sessionStorage.setItem('ckp.mgmtKey', $('mgmtKey').value.trim()); } catch (e) {}
+      render();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  function providers() { return Object.keys(state.catalog || {}).sort(); }
+
+  function render() {
+    const s = state.status || {};
+    $('statusPanel').innerHTML =
+      '<div class="row">' +
+      '<div><div class="muted">Vault</div><code>' + esc(s.vault_address) + (s.vault_namespace ? ' ns=' + esc(s.vault_namespace) : '') + '</code><br><span class="muted">keys at</span> <code>' + esc(s.vault_keys_path) + '/&lt;policy&gt;/&lt;client&gt;</code></div>' +
+      '<div><div class="muted">Last Vault sync</div>' + (s.vault_error ? '<span class="err">' + esc(s.vault_error) + '</span>' : esc(fmtTime(s.last_vault_refresh))) + '</div>' +
+      '<div><div class="muted">Last catalog sync</div>' + (s.catalog_error ? '<span class="err">' + esc(s.catalog_error) + '</span>' : esc(fmtTime(s.last_catalog_refresh))) + '</div>' +
+      '<div><div class="muted">Client id header</div><code>' + esc(s.client_id_header || '(disabled)') + '</code></div>' +
+      '</div>';
+
+    const list = $('policyList');
+    list.innerHTML = (state.policies || []).map((p) => {
+      const count = (state.keys || []).filter((k) => k.policy === p.name).length;
+      return '<div class="list-item' + (p.name === selected ? ' active' : '') + '" data-name="' + esc(p.name) + '"><strong>' + esc(p.name) + '</strong> <span class="muted">' + count + ' key(s) · ' + ((state.views[p.name] || []).length) + ' model(s)</span><br><span class="muted">' + esc(p.description) + '</span></div>';
+    }).join('') || '<span class="muted">No policies yet.</span>';
+    list.querySelectorAll('.list-item').forEach((el) => el.addEventListener('click', () => { selected = el.dataset.name; render(); }));
+
+    $('keyPolicy').innerHTML = (state.policies || []).map((p) => '<option>' + esc(p.name) + '</option>').join('');
+    renderKeys();
+    renderEditor();
+  }
+
+  function fmtTime(t) { return t && !String(t).startsWith('0001') ? new Date(t).toLocaleString() : 'never'; }
+
+  function renderKeys() {
+    const keys = state.keys || [];
+    $('keyTable').innerHTML = keys.length ? '<table><thead><tr><th>Client id</th><th>Policy</th><th>Description</th><th>Vault path</th><th>Rotated</th><th></th></tr></thead><tbody>' +
+      keys.map((k) => '<tr><td><code>' + esc(k.id) + '</code></td><td>' + esc(k.policy) + '</td><td>' + esc(k.description) + '</td><td><code>' + esc(k.vault_path) + '</code></td><td>' + esc(fmtTime(k.rotated_at)) + '</td>' +
+        '<td class="row" style="flex-wrap:nowrap"><button data-rotate="' + esc(k.id) + '">Rotate</button><button class="danger" data-revoke="' + esc(k.id) + '">Revoke</button></td></tr>').join('') +
+      '</tbody></table>' : '<span class="muted">No keys issued.</span>';
+    $('keyTable').querySelectorAll('[data-rotate]').forEach((b) => b.addEventListener('click', () => mutate('rotate', b.dataset.rotate)));
+    $('keyTable').querySelectorAll('[data-revoke]').forEach((b) => b.addEventListener('click', () => mutate('revoke', b.dataset.revoke)));
+  }
+
+  async function mutate(action, id) {
+    const msg = action === 'revoke'
+      ? 'Revoke ' + id + '? The key stops working immediately; its Vault secret is replaced by a revocation marker and old versions are destroyed.'
+      : 'Rotate ' + id + '? The current key stops working immediately; the client must re-read Vault.';
+    if (!confirm(msg)) return;
+    try { await api('POST', '/keys/' + action + '?id=' + encodeURIComponent(id)); toast(id + ': ' + action + 'd'); load(); }
+    catch (e) { toast(e.message, true); }
+  }
+
+  function renderEditor() {
+    if (selected === null) { $('editor').innerHTML = '<span class="muted">Select or create a policy.</span>'; $('editorTitle').textContent = 'Policy'; return; }
+    const p = (state.policies || []).find((x) => x.name === selected) || { name: '', providers: [], aliases: {}, winners: {} };
+    $('editorTitle').textContent = selected ? 'Policy: ' + selected : 'New policy';
+    const provs = providers();
+    const extra = (p.providers || []).filter((x) => x !== '*' && !provs.includes(x));
+    const view = state.views[selected] || [];
+    $('editor').innerHTML =
+      '<label>Name</label><input id="pName" value="' + esc(p.name) + '"' + (selected ? ' disabled' : '') + '>' +
+      '<label>Description</label><input id="pDesc" value="' + esc(p.description) + '">' +
+      '<label>Allowed providers</label><div class="chips" id="pProviders">' +
+        '<label><input type="checkbox" value="*"' + ((p.providers || []).includes('*') ? ' checked' : '') + '>* (all)</label>' +
+        provs.concat(extra).map((x) => '<label><input type="checkbox" value="' + esc(x) + '"' + ((p.providers || []).includes(x) ? ' checked' : '') + '>' + esc(x) + '</label>').join('') +
+      '</div>' +
+      '<label>Allow model patterns (one per line, glob on model or provider/model; empty = all)</label><textarea id="pAllow">' + esc((p.allow_models || []).join('\n')) + '</textarea>' +
+      '<label>Deny model patterns (one per line)</label><textarea id="pDeny">' + esc((p.deny_models || []).join('\n')) + '</textarea>' +
+      '<label>Aliases (one per line: alias = provider/model)</label><textarea id="pAliases">' + esc(Object.entries(p.aliases || {}).map(([k, v]) => k + ' = ' + v.provider + '/' + v.model).join('\n')) + '</textarea>' +
+      '<label>Collision winners</label><div id="pWinners"></div>' +
+      '<div class="row" style="margin-top:12px"><button class="primary" id="savePolicy" style="flex:0">Save</button>' +
+      (selected ? '<button class="danger" id="deletePolicy" style="flex:0">Delete</button>' : '') + '<span></span></div>' +
+      (selected ? '<label>Models exposed to clients (' + view.length + ')</label><table><thead><tr><th>Client name</th><th>Provider</th><th>Upstream model</th></tr></thead><tbody>' +
+        view.map((v) => '<tr><td><code>' + esc(v.name) + '</code></td><td>' + esc(v.provider) + '</td><td><code>' + esc(v.model) + '</code></td></tr>').join('') + '</tbody></table>' : '');
+
+    const renderWinners = () => {
+      const chosen = checkedProviders();
+      const all = chosen.includes('*') ? provs : chosen;
+      const byModel = {};
+      all.forEach((prov) => (state.catalog[prov] || []).forEach((m) => { (byModel[m] = byModel[m] || []).push(prov); }));
+      const collisions = Object.keys(byModel).filter((m) => byModel[m].length > 1).sort();
+      $('pWinners').innerHTML = collisions.length ? '<table><thead><tr><th>Model</th><th>Winner (others drop it)</th></tr></thead><tbody>' +
+        collisions.map((m) => '<tr><td><code>' + esc(m) + '</code></td><td><select data-model="' + esc(m) + '"><option value="">none – expose as provider/model</option>' +
+          byModel[m].map((prov) => '<option' + ((p.winners || {})[m] === prov ? ' selected' : '') + '>' + esc(prov) + '</option>').join('') + '</select></td></tr>').join('') + '</tbody></table>'
+        : '<span class="muted">No model is served by more than one selected provider.</span>';
+    };
+    renderWinners();
+    $('pProviders').addEventListener('change', renderWinners);
+    $('savePolicy').addEventListener('click', savePolicy);
+    if (selected) $('deletePolicy').addEventListener('click', deletePolicy);
+  }
+
+  function checkedProviders() {
+    return Array.from($('pProviders').querySelectorAll('input:checked')).map((i) => i.value);
+  }
+
+  function lines(id) { return $(id).value.split('\n').map((s) => s.trim()).filter(Boolean); }
+
+  async function savePolicy() {
+    const aliases = {};
+    for (const line of lines('pAliases')) {
+      const m = line.match(/^(\S+)\s*=\s*([^/\s]+)\/(\S+)$/);
+      if (!m) { toast('Bad alias line: ' + line, true); return; }
+      aliases[m[1]] = { provider: m[2], model: m[3] };
+    }
+    const winners = {};
+    $('pWinners').querySelectorAll('select').forEach((s) => { if (s.value) winners[s.dataset.model] = s.value; });
+    const policy = {
+      name: $('pName').value.trim(),
+      description: $('pDesc').value.trim(),
+      providers: checkedProviders(),
+      allow_models: lines('pAllow'),
+      deny_models: lines('pDeny'),
+      aliases, winners,
+    };
+    try { await api('POST', '/policies', policy); selected = policy.name; toast('Saved ' + policy.name); load(); }
+    catch (e) { toast(e.message, true); }
+  }
+
+  async function deletePolicy() {
+    if (!confirm('Delete policy ' + selected + '?')) return;
+    try { await api('POST', '/policies/delete?name=' + encodeURIComponent(selected)); selected = null; toast('Deleted'); load(); }
+    catch (e) { toast(e.message, true); }
+  }
+
+  $('connect').addEventListener('click', load);
+  $('refresh').addEventListener('click', async () => {
+    try { state = await api('POST', '/refresh'); render(); toast('Reloaded'); } catch (e) { toast(e.message, true); }
+  });
+  $('newPolicy').addEventListener('click', () => { if (!state) return; selected = ''; renderEditor(); });
+  $('issueKey').addEventListener('click', async () => {
+    const body = { policy: $('keyPolicy').value, name: $('keyName').value.trim(), description: $('keyDesc').value.trim() };
+    try {
+      const k = await api('POST', '/keys', body);
+      toast('Issued ' + k.id + ' → ' + k.vault_path);
+      $('keyName').value = ''; $('keyDesc').value = '';
+      load();
+    } catch (e) { toast(e.message, true); }
+  });
+  if ($('mgmtKey').value) load();
+})();
+</script>
+</body>
+</html>

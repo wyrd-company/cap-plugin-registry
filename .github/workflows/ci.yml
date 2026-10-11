@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  client-key-policy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/client-key-policy
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: plugins/client-key-policy/go.mod
+          cache-dependency-path: plugins/client-key-policy/go.sum
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "Files need gofmt:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: Vet and test
+        run: make test
+
+      - name: Build shared library
+        run: make build
+
+  registry:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate registry.json
+        run: |
+          python3 - <<'PY'
+          import json, re, sys
+          reg = json.load(open("registry.json"))
+          assert reg.get("schema_version") in (1, 2), "unsupported schema_version"
+          ids = set()
+          for i, p in enumerate(reg.get("plugins", [])):
+              for field in ("id", "name", "description", "author"):
+                  assert str(p.get(field, "")).strip(), f"plugins[{i}] missing {field}"
+              assert re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", p["id"]), f"plugins[{i}] invalid id"
+              assert p["id"] not in ids, f"duplicate id {p['id']}"
+              ids.add(p["id"])
+              version = p.get("version", "")
+              assert not version or re.fullmatch(r"[0-9][0-9A-Za-z.+-]*", version), f"plugins[{i}] invalid version"
+          print(f"registry.json OK ({len(ids)} plugins)")
+          PY
