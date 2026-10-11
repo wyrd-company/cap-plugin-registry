@@ -246,6 +246,7 @@ The same operations are available as JSON endpoints under
 ## Known limitations
 
 - **Response model name.** Responses report the upstream model name, not the alias the client requested. CPA rewrites the response model only for its own config aliases.
+- **Model lists with `?key=`.** CPA passes model-list interceptors only the request headers, not the query string or caller identity, so a client that authenticates with `?key=` gets an empty model list. Model requests from such clients still work and are enforced; send the key in a header to see the list.
 - **Unfiltered lookup.** `GET /v1beta/models/<name>` (a single Gemini model lookup) bypasses CPA's response interceptors, so it is not filtered. Requests for that model are still enforced.
 - **Error status from the scheduler.** If the router's target provider has no usable credential, CPA falls back to its normal routing. The scheduler check then rejects any credential outside the policy, and the client sees CPA's `auth_unavailable`-style error instead of a 403.
 - **Multiple CPA instances.** A key revoked or rotated on one instance stops working on the others only after their next `refresh_interval`.

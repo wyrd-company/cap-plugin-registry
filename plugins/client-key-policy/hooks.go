@@ -83,6 +83,7 @@ type responseInterceptRequest struct {
 	RequestHeaders http.Header
 	RequestBody    []byte
 	Body           []byte
+	Metadata       map[string]any
 }
 
 type responseInterceptResponse struct {
@@ -218,7 +219,10 @@ func (rt *runtime) handleResponseIntercept(raw []byte) (any, error) {
 	if req.Model != "" || len(req.RequestBody) > 0 || len(req.Body) == 0 {
 		return responseInterceptResponse{}, nil
 	}
-	record, _ := rt.clientFromMetadata(nil, req.RequestHeaders)
+	// CPA currently sends model-list interceptors no Metadata and no query, so a
+	// caller authenticated via ?key= cannot be identified here and gets an empty
+	// list. caller_scope is honoured as soon as the host provides it.
+	record, _ := rt.clientFromMetadata(req.Metadata, req.RequestHeaders)
 	view, _ := rt.viewFor(record)
 	body, changed, errFilter := filterModelList(req.SourceFormat, req.Body, view)
 	if errFilter != nil || !changed {

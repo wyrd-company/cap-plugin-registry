@@ -20,6 +20,10 @@ import (
 // errVaultNotFound reports a missing KV path.
 var errVaultNotFound = errors.New("vault: not found")
 
+// errVaultCASMismatch reports a KV v2 check-and-set conflict: the secret was
+// created or changed since the version the caller expected.
+var errVaultCASMismatch = errors.New("vault: check-and-set version mismatch")
+
 // vaultClient is a minimal KV v2 client for Vault and OpenBao.
 type vaultClient struct {
 	cfg  VaultConfig
@@ -66,24 +70,43 @@ func (v *vaultClient) FullDataPath(rel string) string {
 	return v.cfg.Mount + "/data/" + v.kvPath(rel)
 }
 
-func (v *vaultClient) Read(ctx context.Context, rel string) (map[string]any, error) {
+// Read returns the latest data of a secret and its KV v2 version.
+func (v *vaultClient) Read(ctx context.Context, rel string) (map[string]any, int, error) {
 	var out struct {
 		Data struct {
-			Data map[string]any `json:"data"`
+			Data     map[string]any `json:"data"`
+			Metadata struct {
+				Version int `json:"version"`
+			} `json:"metadata"`
 		} `json:"data"`
 	}
 	if errDo := v.do(ctx, http.MethodGet, v.cfg.Mount+"/data/"+escapePath(v.kvPath(rel)), nil, &out); errDo != nil {
-		return nil, errDo
+		return nil, 0, errDo
 	}
 	if out.Data.Data == nil {
 		// A deleted (soft) latest version returns null data.
-		return nil, errVaultNotFound
+		return nil, 0, errVaultNotFound
 	}
-	return out.Data.Data, nil
+	return out.Data.Data, out.Data.Metadata.Version, nil
 }
 
-func (v *vaultClient) Write(ctx context.Context, rel string, data map[string]any) error {
-	return v.do(ctx, http.MethodPost, v.cfg.Mount+"/data/"+escapePath(v.kvPath(rel)), map[string]any{"data": data}, nil)
+// Write stores a new version of a secret and returns that version. A non-nil
+// cas makes the write conditional: 0 means "only if the secret does not exist",
+// n means "only if the current version is n" (errVaultCASMismatch otherwise).
+func (v *vaultClient) Write(ctx context.Context, rel string, data map[string]any, cas *int) (int, error) {
+	body := map[string]any{"data": data}
+	if cas != nil {
+		body["options"] = map[string]any{"cas": *cas}
+	}
+	var out struct {
+		Data struct {
+			Version int `json:"version"`
+		} `json:"data"`
+	}
+	if errDo := v.do(ctx, http.MethodPost, v.cfg.Mount+"/data/"+escapePath(v.kvPath(rel)), body, &out); errDo != nil {
+		return 0, errDo
+	}
+	return out.Data.Version, nil
 }
 
 // List returns the child names under rel. Folder names keep their trailing slash.
@@ -165,6 +188,9 @@ func (v *vaultClient) request(ctx context.Context, method, apiPath, token string
 	}
 	if resp.StatusCode == http.StatusNotFound {
 		return resp.StatusCode, errVaultNotFound
+	}
+	if resp.StatusCode == http.StatusBadRequest && strings.Contains(strings.ToLower(string(raw)), "check-and-set") {
+		return resp.StatusCode, fmt.Errorf("vault %s %s: %w: %s", method, apiPath, errVaultCASMismatch, vaultErrors(raw))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return resp.StatusCode, fmt.Errorf("vault %s %s: status %d: %s", method, apiPath, resp.StatusCode, vaultErrors(raw))

@@ -151,3 +151,41 @@ func TestFilterModelLists(t *testing.T) {
 		t.Fatal("completion responses must pass through")
 	}
 }
+
+func modelIDs(t *testing.T, body []byte) []string {
+	t.Helper()
+	var doc struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{}
+	for _, d := range doc.Data {
+		ids = append(ids, d["id"].(string))
+	}
+	return ids
+}
+
+// A ?key= caller reaches the model-list hook with neither headers nor metadata
+// identifying it (CPA's current behaviour), so it gets an empty list; once the
+// host forwards caller_scope, the same request is filtered to the policy view.
+func TestModelListForQueryKeyCaller(t *testing.T) {
+	rt, record := testRuntime(t)
+	list := []byte(`{"object":"list","data":[{"id":"gpt-5","object":"model"}]}`)
+
+	current := call[responseInterceptResponse](t, rt.handleResponseIntercept, map[string]any{
+		"SourceFormat": "openai", "RequestHeaders": http.Header{}, "Body": list,
+	})
+	if ids := modelIDs(t, current.Body); len(ids) != 0 {
+		t.Fatalf("unidentified ?key= caller should get an empty list, got %v", ids)
+	}
+
+	withScope := call[responseInterceptResponse](t, rt.handleResponseIntercept, map[string]any{
+		"SourceFormat": "openai", "RequestHeaders": http.Header{}, "Body": list,
+		"Metadata": map[string]any{"caller_scope": callerScope(record.ID)},
+	})
+	if ids := modelIDs(t, withScope.Body); len(ids) != 3 || ids[1] != "gpt-5" {
+		t.Fatalf("caller_scope should resolve the policy view, got %v", ids)
+	}
+}

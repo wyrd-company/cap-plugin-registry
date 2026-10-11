@@ -37,6 +37,9 @@ type client struct {
 	RotatedAt   time.Time `json:"rotated_at"`
 	VaultPath   string    `json:"vault_path"`
 	keyHash     [32]byte
+	// version is the KV v2 version this record was read or written at; rotation
+	// writes with cas=version so a concurrent change on another instance is detected.
+	version int
 }
 
 // snapshot is an immutable copy of everything the request hooks need.
@@ -224,7 +227,7 @@ func (rt *runtime) loadFromVault(ctx context.Context) error {
 }
 
 func (rt *runtime) readPolicy(ctx context.Context, name string) (*Policy, error) {
-	data, errRead := rt.vault.Read(ctx, policiesDir+"/"+name)
+	data, _, errRead := rt.vault.Read(ctx, policiesDir+"/"+name)
 	if errRead != nil {
 		return nil, errRead
 	}
@@ -251,7 +254,7 @@ type keyRecord struct {
 
 func (rt *runtime) readClient(ctx context.Context, policyName, name string) (*client, error) {
 	rel := keysDir + "/" + policyName + "/" + name
-	data, errRead := rt.vault.Read(ctx, rel)
+	data, version, errRead := rt.vault.Read(ctx, rel)
 	if errRead != nil {
 		return nil, errRead
 	}
@@ -274,6 +277,7 @@ func (rt *runtime) readClient(ctx context.Context, policyName, name string) (*cl
 		RotatedAt:   rotated,
 		VaultPath:   rt.vault.FullDataPath(rel),
 		keyHash:     sha256.Sum256([]byte(record.APIKey)),
+		version:     version,
 	}, nil
 }
 
@@ -412,7 +416,7 @@ func (rt *runtime) savePolicy(ctx context.Context, policy Policy) error {
 	}
 	rt.writeMu.Lock()
 	defer rt.writeMu.Unlock()
-	if errWrite := rt.vault.Write(ctx, policiesDir+"/"+policy.Name, data); errWrite != nil {
+	if _, errWrite := rt.vault.Write(ctx, policiesDir+"/"+policy.Name, data, nil); errWrite != nil {
 		return errWrite
 	}
 	current := rt.snap.Load()
@@ -485,7 +489,22 @@ func (rt *runtime) issueKey(ctx context.Context, policyName, name, description s
 		return nil, errEncode
 	}
 	rel := keysDir + "/" + policyName + "/" + name
-	if errWrite := rt.vault.Write(ctx, rel, data); errWrite != nil {
+	// Check-and-set at the Vault boundary: the local snapshot may be stale when
+	// another CPA instance issued or rotated this key since the last refresh.
+	cas := 0
+	if existing != nil {
+		cas = existing.version
+	}
+	version, errWrite := rt.vault.Write(ctx, rel, data, &cas)
+	if errors.Is(errWrite, errVaultCASMismatch) {
+		// Leave the snapshot untouched and pick up the other instance's change.
+		go rt.refreshVault()
+		if existing == nil {
+			return nil, fmt.Errorf("key %s already exists in Vault (issued by another instance); reload and rotate it instead", id)
+		}
+		return nil, fmt.Errorf("key %s was changed in Vault by another instance; reload and retry", id)
+	}
+	if errWrite != nil {
 		return nil, errWrite
 	}
 	created, _ := time.Parse(time.RFC3339, record.CreatedAt)
@@ -498,6 +517,7 @@ func (rt *runtime) issueKey(ctx context.Context, policyName, name, description s
 		RotatedAt:   now,
 		VaultPath:   rt.vault.FullDataPath(rel),
 		keyHash:     sha256.Sum256([]byte(apiKey)),
+		version:     version,
 	}
 	clients := copyClients(current.clients)
 	clients[id] = updated
